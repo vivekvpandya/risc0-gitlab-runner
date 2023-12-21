@@ -1407,6 +1407,7 @@ dependencies = [
  "chrono",
  "futures",
  "gitlab-runner",
+ "glob",
  "handlebars",
  "junit-parser",
  "lava-api",

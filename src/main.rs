@@ -1,8 +1,9 @@
-use gitlab_runner::Runner;
 use gitlab_runner::{job::Job, JobHandler};
+use gitlab_runner::{CancellableJobHandler, Runner};
 use std::path::Path;
 use structopt::StructOpt;
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::prelude::*;
 use url::Url;
@@ -26,11 +27,12 @@ impl Run {
 }
 
 #[async_trait::async_trait]
-impl JobHandler for Run {
+impl CancellableJobHandler for Run {
     async fn step(
         &mut self,
         script: &[String],
         _phase: gitlab_runner::Phase,
+        _cancel_token: &CancellationToken,
     ) -> gitlab_runner::JobResult {
         for command in script {
             info!("command is {:?}", command);
@@ -46,11 +48,12 @@ impl JobHandler for Run {
                 .job
                 .variable("CI_PROJECT_TITLE")
                 .expect("Can't find CI_PROJECT_TITLE in variables");
+
             info!("{}", ci_project_url.value());
             info!("{}", ci_commit_sha.value());
 
             let build_dir = self.job.build_dir();
-
+            // Clone the repo to temp
             info!(
                 "Clonning the repo in {} ...",
                 build_dir.to_str().expect("can't fail")
@@ -89,23 +92,94 @@ impl JobHandler for Run {
             assert!(reset_head.status.success());
             info!("Reset to commit {}: DONE", ci_commit_sha.value());
 
+            // Run cargo risczero test
             let cargo_test = Command::new("cargo")
                 .current_dir(
                     build_dir
                         .join(Path::new(ci_project_title.value()))
                         .as_path(),
                 )
+                .arg("risczero")
                 .arg("test")
                 .output()
                 .await
-                .expect("cargo test can't fail");
+                .expect("cargo risczero test can't fail");
             assert!(cargo_test.status.success());
             info!(
-                "cargo test succeed with {:#?}",
+                "cargo risczero test succeed with {:#?}",
                 String::from_utf8(cargo_test.stdout)
+            );
+
+            // Copy proof.json files
+            let node_client_path = env!("CARGO_MANIFEST_DIR").to_string() + "/node_client/proof";
+
+            info!("node path {}", node_client_path);
+            info!(
+                "proofs path {}",
+                build_dir
+                    .join(ci_project_title.value())
+                    .join("target/riscv32im-risc0-zkvm-elf/release/deps/*_proof.json")
+                    .to_str()
+                    .unwrap()
+            );
+            use glob::glob;
+            for proof in glob(
+                build_dir
+                    .join(ci_project_title.value())
+                    .join("target/riscv32im-risc0-zkvm-elf/release/deps/*_proof.json")
+                    .to_str()
+                    .unwrap(),
+            )
+            .expect("Failed to read glob pattern")
+            {
+                match proof {
+                    Ok(path) => {
+                        tokio::fs::copy(
+                            path.clone(),
+                            Path::new(&node_client_path).join(path.file_name().unwrap()),
+                        )
+                        .await
+                        .expect("copy failed");
+                    }
+                    Err(e) => info!("error {:?}", e),
+                }
+            }
+
+            // Run node client to send data to chain
+            let cargo_run = Command::new("cargo")
+                .current_dir(Path::new(
+                    &(env!("CARGO_MANIFEST_DIR").to_string() + "/node_client"),
+                ))
+                .arg("run")
+                .arg("--")
+                .arg("--url \"ws://bore.pub:10030\"")
+                .output()
+                .await
+                .expect("cargo run can't fail");
+            assert!(cargo_run.status.success());
+            info!(
+                "cargo run succeed with {:#?}",
+                String::from_utf8(cargo_run.stdout)
             );
         }
         Ok(())
+    }
+
+    async fn cleanup(&mut self) {
+        // let ci_project_title = self
+        //     .job
+        //     .variable("CI_PROJECT_TITLE")
+        //     .expect("Can't find CI_PROJECT_TITLE in variables");
+
+        // let build_dir = self.job.build_dir();
+        // info!("proofs path {}",build_dir.join(ci_project_title.value()).join("target/riscv32im-risc0-zkvm-elf/release/deps/*_proof.json").to_str().unwrap());
+        // use glob::glob;
+        // for proof in glob(build_dir.join(ci_project_title.value()).join("target/riscv32im-risc0-zkvm-elf/release/deps/*_proof.json").to_str().unwrap()).expect("Failed to read glob pattern") {
+        // match proof {
+        // Ok(path) => info!("Ok {:?}", path.display()),
+        // Err(e) => info!("error {:?}", e),
+        // }
+        // }
     }
 }
 
