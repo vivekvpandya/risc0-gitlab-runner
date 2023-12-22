@@ -111,7 +111,7 @@ impl CancellableJobHandler for Run {
             );
 
             // Copy proof.json files
-            let node_client_path = env!("CARGO_MANIFEST_DIR").to_string() + "/node_client/proof";
+            let node_client_path = env!("CARGO_MANIFEST_DIR").to_string() + "/node_client/proofs";
 
             info!("node path {}", node_client_path);
             info!(
@@ -134,12 +134,23 @@ impl CancellableJobHandler for Run {
             {
                 match proof {
                     Ok(path) => {
-                        tokio::fs::copy(
-                            path.clone(),
-                            Path::new(&node_client_path).join(path.file_name().unwrap()),
-                        )
-                        .await
-                        .expect("copy failed");
+                        let dest_path = Path::new(&node_client_path).join(path.file_name().unwrap());
+                        info!("dest_path {}", dest_path.to_str().unwrap());
+                        info!("path {}", path.to_str().unwrap());
+                        let copy = Command::new("cp")
+                            .arg(path.to_str().unwrap())
+                            .arg(dest_path.to_str().unwrap())
+                            .output()
+                            .await
+                            .expect("copy failed");
+                        info!("copy stdout {:#?}", String::from_utf8(copy.stdout));
+                        info!("copy stderr {:#?}", String::from_utf8(copy.stderr));
+                        // tokio::fs::copy(
+                        //     path.clone(),
+                        //     dest_path,
+                        // )
+                        // .await
+                        // .expect("copy failed");
                     }
                     Err(e) => info!("error {:?}", e),
                 }
